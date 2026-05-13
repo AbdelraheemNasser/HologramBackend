@@ -11,7 +11,7 @@ const povConverter = require('./services/povConverter');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const LED_COUNT = parseInt(process.env.LED_COUNT) || 60;
+const LED_COUNT = parseInt(process.env.LED_COUNT) || 50;
 const MOTOR_RPM = parseInt(process.env.MOTOR_RPM) || 3000;
 
 // Middleware
@@ -218,13 +218,56 @@ app.get('/api/latest', async (req, res) => {
     const povDataRaw = await fs.readFile(povFilePath, 'utf-8');
     const povData = JSON.parse(povDataRaw);
 
-    res.json({
+    // For ESP32: Only send first frame to avoid memory issues
+    // ESP32 can request more frames individually if needed
+    const firstFrameOnly = {
       fileId: latest.id,
       originalName: latest.originalName,
       isGif: latest.isGif,
       uploadedAt: latest.uploadedAt,
-      ...povData
+      config: povData.config,
+      frameCount: povData.frameCount,
+      frames: [povData.frames[0]] // Only first frame
+    };
+
+    res.json(firstFrameOnly);
+
+  } catch (error) {
+    console.error('❌ Error retrieving latest image:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve latest image',
+      message: error.message
     });
+  }
+});
+
+// ESP32-friendly endpoint with minimal data
+app.get('/api/esp32/latest', async (req, res) => {
+  try {
+    const images = Object.values(processedImages);
+    if (images.length === 0) {
+      return res.status(404).json({ error: 'No images available' });
+    }
+
+    // Sort by upload time and get latest
+    images.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+    const latest = images[0];
+
+    const povFilePath = latest.povDataPath;
+    const povDataRaw = await fs.readFile(povFilePath, 'utf-8');
+    const povData = JSON.parse(povDataRaw);
+
+    // Send only config and first 5 slices for testing
+    const minimalData = {
+      config: povData.config,
+      frameCount: povData.frameCount,
+      frames: [{
+        sliceCount: Math.min(5, povData.frames[0].sliceCount),
+        slices: povData.frames[0].slices.slice(0, 5)
+      }]
+    };
+
+    res.json(minimalData);
 
   } catch (error) {
     console.error('❌ Error retrieving latest image:', error);
@@ -268,6 +311,7 @@ app.delete('/api/images/:fileId', async (req, res) => {
 // Start server
 const startServer = async () => {
   await initDirectories();
+  await loadExistingFiles();
   
   app.listen(PORT, () => {
     console.log('🚀 ========================================');
@@ -275,8 +319,49 @@ const startServer = async () => {
     console.log(`📡 Server running on port ${PORT}`);
     console.log(`💡 LED Count: ${LED_COUNT}`);
     console.log(`⚡ Motor RPM: ${MOTOR_RPM}`);
+    console.log(`📁 Loaded ${Object.keys(processedImages).length} existing images`);
     console.log('🚀 ========================================');
   });
+};
+
+// Load existing processed files on startup
+const loadExistingFiles = async () => {
+  try {
+    const processedFiles = await fs.readdir('processed');
+    const uploadedFiles = await fs.readdir('uploads');
+    
+    for (const file of processedFiles) {
+      if (path.extname(file) === '.json') {
+        const fileId = path.parse(file).name;
+        const povFilePath = path.join('processed', file);
+        
+        // Find corresponding upload file
+        const uploadFile = uploadedFiles.find(f => f.startsWith(fileId));
+        
+        if (uploadFile) {
+          // Read POV data to get frame count
+          const povDataRaw = await fs.readFile(povFilePath, 'utf-8');
+          const povData = JSON.parse(povDataRaw);
+          
+          processedImages[fileId] = {
+            id: fileId,
+            originalName: uploadFile,
+            filename: uploadFile,
+            isGif: povData.frameCount > 1,
+            frameCount: povData.frameCount,
+            povDataPath: povFilePath,
+            uploadedAt: new Date().toISOString(),
+            ledCount: povData.config.ledCount,
+            motorRPM: povData.config.motorRPM
+          };
+          
+          console.log(`✓ Loaded: ${fileId} (${povData.frameCount} frames)`);
+        }
+      }
+    }
+  } catch (error) {
+    console.log('ℹ️ No existing files to load or error loading:', error.message);
+  }
 };
 
 startServer();
