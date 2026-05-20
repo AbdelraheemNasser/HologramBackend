@@ -257,17 +257,15 @@ app.get('/api/esp32/latest', async (req, res) => {
     const povDataRaw = await fs.readFile(povFilePath, 'utf-8');
     const povData = JSON.parse(povDataRaw);
 
-    // Send only config and first 5 slices for testing
-    const minimalData = {
+    // Send ALL slices for static images (frameCount = 1)
+    // For GIFs, send only first frame
+    const responseData = {
       config: povData.config,
       frameCount: povData.frameCount,
-      frames: [{
-        sliceCount: Math.min(5, povData.frames[0].sliceCount),
-        slices: povData.frames[0].slices.slice(0, 5)
-      }]
+      frames: [povData.frames[0]] // Send complete first frame with all slices
     };
 
-    res.json(minimalData);
+    res.json(responseData);
 
   } catch (error) {
     console.error('❌ Error retrieving latest image:', error);
